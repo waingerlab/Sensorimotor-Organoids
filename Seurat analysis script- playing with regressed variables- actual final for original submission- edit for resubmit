@@ -1,0 +1,451 @@
+###### ANALYSIS OF JOAO'S ORGANOID scRNA-SEQ DATA- optimized, updated, high resolution
+setwd("/home/dmd47/JP_scRNAseq_Organoid_early/")
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(matrixStats)
+dir.create("Updated final, sept 24, v2")
+
+# Load data and create Seurat object
+data<-fread("counts.csv")
+cells<-fread("metrics.csv")
+genes<-fread("gene_annotations_DD.csv")
+data<-column_to_rownames(data, "V1")
+cells<-column_to_rownames(cells, "V1")
+genes<-column_to_rownames(genes, "V1")
+rows_cells<-rownames(cells)
+rows_genes<-rownames(genes)
+data<-as(as.matrix(data),"dgCMatrix")
+rownames(data)<-rows_genes
+rm(rows_genes)
+rm(rows_cells)
+org<-CreateSeuratObject(data,project="Organoid",min.cells=5,min.genes=200, normalization.method="LogNormalize", meta.data=cells)
+
+# Set up to regress cell cycle genes
+ccgenes <- readLines("regev_lab_cell_cycle_genes.txt")
+ccgenes<-as.data.frame(ccgenes, stringsAsFactors=F)
+ccgenes<-genes %>% filter(geneName %in% ccgenes[,1]) %>% .[,c("geneID","geneName")] %>% inner_join(x=ccgenes,y=.,by=c("ccgenes" = "geneName")) %>% pull(geneID)
+genes_s <- ccgenes[1:43]
+genes_g2m <- ccgenes[44:97]
+
+##### REGRESS OUT RUN, PHASE, NCOUNT, NMITO
+# Seurat analysis set up
+org<-CellCycleScoring(org,s.genes=genes_s, g2m.genes=genes_g2m, set.ident=T)
+org@meta.data$CC.Difference <- org@meta.data$S.Score - org@meta.data$G2M.Score
+org <- ScaleData(object = org, vars.to.regress = c("orig.ident","Phase","nCount","nMito"))
+org <- FindVariableGenes(org, do.plot=F, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.05, x.high.cutoff = 3, y.cutoff = 0.75)
+org <- RunPCA(object = org, pc.genes=org@var.genes, do.print = F)
+### Save variable gene list
+write.csv(org@var.genes,"Updated final, sept 24, v2/Genes_var,0.05-3,0.75.csv")
+# PCA vis of cell cycle gene effects and run effects
+pdf("Updated final, sept 24, v2/Initial PCA plots- regress run, phase, nCount, nMito.pdf", useDingbats=FALSE)
+PCAPlot(org, group.by="Phase")
+PCAPlot(org, group.by="orig.ident")
+VizPCA(object= org, pcs.use=1:12, font.size=0.1)
+PCHeatmap(object = org, pc.use=1:20, cells.use = 1000, do.balanced = TRUE, label.columns = FALSE, labRow = FALSE, remove.key=TRUE)
+PCElbowPlot(object=org)
+dev.off()
+# Run and plot tSNE
+org <- FindClusters(object = org, reduction.type = "pca", dims.use =1:15, resolution = 1.6, print.output = 0, save.SNN = TRUE, force.recalc=T)
+org <- RunTSNE(object = org, dims.use =1:15, do.fast = TRUE, check_duplicates=F, max_iter=5000)
+pdf("Updated final, sept 24, v2/tSNE- regress run, phase, nCount, nMito.pdf",useDingbats=FALSE)
+TSNEPlot(object = org,do.label=T)
+TSNEPlot(object = org,group.by="Phase")
+TSNEPlot(object = org,group.by="orig.ident")
+dev.off()
+
+saveRDS(org,'Updated final, sept 24, v2/Seurat object.rds')
+
+
+setwd("/home/dmd47/JP_scRNAseq_Organoid_early/")
+library(Seurat)
+library(tidyverse)
+library(data.table)
+library(matrixStats)
+data<-fread("counts.csv")
+cells<-fread("metrics.csv")
+genes<-fread("gene_annotations_DD.csv")
+data<-column_to_rownames(data, "V1")
+cells<-column_to_rownames(cells, "V1")
+genes<-column_to_rownames(genes, "V1")
+rows_cells<-rownames(cells)
+rows_genes<-rownames(genes)
+data<-as(as.matrix(data),"dgCMatrix")
+rownames(data)<-rows_genes
+rm(rows_genes)
+rm(rows_cells)
+org<-readRDS("Updated final, sept 24, v2/Seurat object.rds")
+
+epi_genes<-c("DPPA5","IFITM1","UPP1","MT1X","GDF3","KLF17","SAT1","PIM2","SUSD2")
+epi_genes2<-genes$geneID[which(genes$geneName %in% epi_genes)]
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = epi_genes2, slim.col.label = TRUE, group.label.rot = TRUE)
+VlnPlot(object=org, features.plot=epi_genes2, use.raw = TRUE, y.log = TRUE)
+
+te_genes<-c("KRT18","KRT8","S100A16","CLDN10","KRT19","FABP3","SLC34A2","MYC","S100A6")
+te_genes2<-genes$geneID[which(genes$geneName %in% te_genes)]
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = te_genes2, slim.col.label = TRUE, group.label.rot = TRUE)
+VlnPlot(object=org, features.plot=te_genes2, use.raw = TRUE, y.log = TRUE)
+
+pe_genes<-c("APOA1",'OTX2','HMGCR','RNASE1','ID2','APOA2','GATA6','CTSE','PDGFRA')
+pe_genes2<-genes$geneID[which(genes$geneName %in% pe_genes)]
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = pe_genes2, slim.col.label = TRUE, group.label.rot = TRUE)
+VlnPlot(object=org, features.plot=pe_genes2, use.raw = TRUE, y.log = TRUE)
+
+
+
+#### ANALYSIS OF ORIGINAL CLUSTERS
+## Count cells in clusters by run and cell cycle phase
+ident<-data.frame(org@ident)
+ident<-rownames_to_column(ident)
+ident$run<-org@meta.data$orig.ident
+ident$phase<-org@meta.data$Phase
+colnames(ident)<-c("cell","cluster","run","phase")
+
+ident %>% group_by(cluster) %>% summarize(n=length(cell)) %>% View()
+
+summ_ident_run<-ident %>% group_by(run,cluster) %>% tally()
+summ_ident_phase<-ident %>% group_by(phase,cluster) %>% tally()
+### Save plot of run contribution to each cluster
+pdf("Updated final, sept 24, v2/Cluster contributions by run, initial tSNE.pdf",useDingbats=FALSE)
+ggplot(summ_ident_run) + theme_bw() + geom_bar(aes(x=cluster,y=n,fill=run),position="fill",stat="identity")
+ggplot(summ_ident_phase) + theme_bw() + geom_bar(aes(x=cluster,y=n,fill=phase),position="fill",stat="identity")
+dev.off()
+# Identify cluster markers
+cluster.markers<-FindAllMarkers(object=org, method="negbinom", only.pos=T, min.pct=0.5)
+cluster.markers<-merge(cluster.markers,genes,by.x="gene",by.y="geneID")
+### Save top 100 cluster marker genes for each cluster
+write.csv(cluster.markers[,c(1,3,4,5,6,7,13)] %>% group_by(cluster) %>% top_n(100, avg_logFC),"Updated final, sept 24, v2/Joao scRNAseq tsne, top100, initial tSNE.csv")
+## Prepare data to generate heatmap of top 10 cluster marker genes by avg_logFC
+genes_clusters<-cluster.markers %>% group_by(cluster) %>% top_n(10, avg_logFC)
+genes_clusters<-genes_clusters[order(genes_clusters$cluster,-genes_clusters$avg_logFC),] %>% pull(gene)
+genes_clusters_names<-genes %>% filter(geneID %in% genes_clusters) %>% .[,c(6,7)]
+### Save Heatmap of top 10 cluster marker genes and file for renaming from ENSEMBLE IDs
+pdf("Updated final, sept 24, v2/Heatmap, cluster marker genes, 100 cells per cluster, initial tSNE.pdf",useDingbats=FALSE)
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = genes_clusters, slim.col.label = TRUE, group.label.rot = TRUE)
+dev.off()
+write.csv(genes_clusters_names,"Updated final, sept 24, v2/Heatmap, cluster marker gene names for relabeling, initial tSNE.csv")
+
+#### COMBINE CLUSTERS BASED ON SIMILAR GENE EXPRESSION PROFILES BY HEATMAP
+### Combine similar clusters- 0/9->1, 1/2/8->2, 3/4->3, 6/12->4, 5, 7, 10, 11 and replot
+org@meta.data$cluster.init<-org@ident %>% as.character() %>% as.numeric()
+for (i in 1:nrow(org@meta.data)) {
+  if(org@meta.data$cluster.init[i]==0|org@meta.data$cluster.init[i]==9) {
+    org@meta.data$cluster.new[i]<-1 } else {
+    org@meta.data$cluster.new[i]<-0 }
+  if(org@meta.data$cluster.init[i]==1|org@meta.data$cluster.init[i]==2|org@meta.data$cluster.init[i]==8) {
+    org@meta.data$cluster.new[i]<-2 } else {
+    org@meta.data$cluster.new[i]<-org@meta.data$cluster.new[i] }
+  if(org@ident[i]==3|org@ident[i]==4) {
+    org@meta.data$cluster.new[i]<-3 } else {
+    org@meta.data$cluster.new[i]<-org@meta.data$cluster.new[i] }
+  if(org@ident[i]==6|org@ident[i]==12) {
+    org@meta.data$cluster.new[i]<-4 } else {
+    org@meta.data$cluster.new[i]<-org@meta.data$cluster.new[i] }
+  if(org@ident[i]==5) {
+    org@meta.data$cluster.new[i]<-5 } else {
+    org@meta.data$cluster.new[i]<-org@meta.data$cluster.new[i] }
+  if(org@ident[i]==7) {
+    org@meta.data$cluster.new[i]<-7 } else {
+    org@meta.data$cluster.new[i]<-org@meta.data$cluster.new[i] }
+  if(org@ident[i]==10) {
+    org@meta.data$cluster.new[i]<-10 } else {
+    org@meta.data$cluster.new[i]<-org@meta.data$cluster.new[i] }
+  if(org@ident[i]==11) {
+    org@meta.data$cluster.new[i]<-11 } else {
+    org@meta.data$cluster.new[i]<-org@meta.data$cluster.new[i] } }
+org<-SetIdent(org, ident.use= as.character(org@meta.data$cluster.new))
+pdf("Updated final, sept 24/Combined clusters, tSNE and heatmap.pdf",useDingbats=FALSE)
+TSNEPlot(object = org,do.label=T, group.by=as.factor(org@meta.data$cluster.orig))
+TSNEPlot(object = org,do.label=T)
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = genes_clusters, slim.col.label = TRUE, group.label.rot = TRUE)
+dev.off()
+
+#### ANALYSIS OF COMBINED CLUSTERS
+## Count cells in clusters by run and cell cycle phase
+ident<-data.frame(org@ident)
+ident<-rownames_to_column(ident)
+ident$run<-org@meta.data$orig.ident
+ident$phase<-org@meta.data$Phase
+colnames(ident)<-c("cell","cluster","run","phase")
+summ_ident_run<-ident %>% group_by(run,cluster) %>% tally()
+summ_ident_phase<-ident %>% group_by(phase,cluster) %>% tally()
+### Save plot of run contribution to each cluster
+pdf("Updated final, sept 24/Cluster contributions by run, combined clusters.pdf",useDingbats=FALSE)
+ggplot(summ_ident_run) + theme_bw() + geom_bar(aes(x=cluster,y=n,fill=run),position="fill",stat="identity")
+ggplot(summ_ident_phase) + theme_bw() + geom_bar(aes(x=cluster,y=n,fill=phase),position="fill",stat="identity")
+dev.off()
+# Identify cluster markers
+cluster.markers<-FindAllMarkers(object=org, method="negbinom", only.pos=T, min.pct=0.5)
+cluster.markers<-merge(cluster.markers,genes,by.x="gene",by.y="geneID")
+### Save top 100 cluster marker genes for each cluster
+write.csv(cluster.markers[,c(1,3,4,5,6,7,13)] %>% group_by(cluster) %>% top_n(100, avg_logFC),"Updated final, sept 24/Joao scRNAseq tsne, top100, comined clusters.csv")
+## Prepare data to generate heatmap of top 10 cluster marker genes by avg_logFC
+genes_clusters<-cluster.markers %>% group_by(cluster) %>% top_n(10, avg_logFC)
+genes_clusters<-genes_clusters[order(genes_clusters$cluster,-genes_clusters$avg_logFC),] %>% pull(gene)
+genes_clusters_names<-genes %>% filter(geneID %in% genes_clusters) %>% .[,c(6,7)]
+### Save Heatmap of top 10 cluster marker genes and file for renaming from ENSEMBLE IDs
+pdf("Updated final, sept 24/Heatmap, cluster marker genes, 100 cells per cluster, combined clusters.pdf",useDingbats=FALSE)
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = genes_clusters, slim.col.label = TRUE, group.label.rot = TRUE)
+dev.off()
+write.csv(genes_clusters_names,"Updated final, sept 24/Heatmap, cluster marker gene names for relabeling, combined clusters.csv")
+
+### Plot individual genes as violin plots
+myogenic<-c("PAX3","LBX1","CD200","MEF2A")
+neurogenic<-c("NEUROG1","NEUROG2")								
+neurons<-c("TUBB3","SNAP25","SYP","RBFOX3")
+neu_motor<-c("ISL1","HOXB9","FOXP1")
+neu_sensory<-c("ISL1","POU4F1","PRPH")
+interneurons<-c("GAD1","GAD2","LBX1","LMX1B")
+vasculature<-c("FZD4","GPC3","LEF1","MYL9")
+microglia<-c("LPCAT2","TMTC1","TGFBR1","OLFML3")
+skin<-c("KRT10")
+astrocytes<-c("ATP1A2","GJA1","SLC1A2","S100B")
+schwann<-c("MPZ","PMP22")
+oligo<-c("PLP1", "PDGFRA")
+classes<-list(myogenic, neurogenic, neurons, neu_motor, neu_sensory, interneurons, vasculature, microglia, skin, astrocytes, schwann, oligo)
+names(classes)<-c("myogenic", "neurogenic", "neurons", "neu_motor", "neu_sensory", "interneurons", "vasculature", "microglia", "skin", "astrocytes", "schwann", "oligo")
+data_raw<-org@raw.data %>% t()
+summ<-summary(data_raw)
+data_raw<-data.frame(Cell=rownames(data_raw)[summ$i], Gene=colnames(data_raw)[summ$j], Data=data_raw@x)
+data_raw<-full_join(data_raw,genes[,c(6:7)], by=c("Gene"="geneID"))
+pdf("Updated final, sept 24, v2/Individual literature gene markers, by cell type.pdf")
+for(i in seq_along(classes)) {
+  print(
+    ggplot(data_raw %>% filter(geneName %in% classes[[i]]), aes(x=Gene,y=Data)) + theme_bw() + 
+      ylim(0,NA) + ylab("Scaled expression") + facet_wrap(~geneName, scales="free", ncol=4) +
+      geom_violin(fill="grey50") + geom_jitter(width=0.2, height=0, alpha=0.5, color="grey") +
+      ggtitle(names(classes)[i]) ) }
+dev.off()
+
+
+
+
+####### DO NOT RUN BELOW THIS LINE ##################
+
+##### REGRESS OUT NO VARIABLES
+# Seurat analysis set up
+org <- ScaleData(object = org)
+org <- FindVariableGenes(org, do.plot=F, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.05, x.high.cutoff = 3, y.cutoff = 0.75)
+org<-CellCycleScoring(org,s.genes=genes_s, g2m.genes=genes_g2m, set.ident=T)
+org@meta.data$CC.Difference <- org@meta.data$S.Score - org@meta.data$G2M.Score
+org <- RunPCA(object = org, pc.genes=org@var.genes, do.print = F)
+### Save variable gene list
+# write.csv(genes_variable,"Final v3/Genes_var,0.05-3,0.75.csv")
+# PCA vis of cell cycle gene effects and run effects
+pdf("Playing with regressed variables/Initial PCA plots- nothing regressed.pdf", useDingbats=FALSE)
+PCAPlot(org, group.by="Phase")
+PCAPlot(org, group.by="orig.ident")
+VizPCA(object= org, pcs.use=1:12, font.size=0.1)
+PCHeatmap(object = org, pc.use=1:20, cells.use = 1000, do.balanced = TRUE, label.columns = FALSE, labRow = FALSE, remove.key=TRUE)
+PCElbowPlot(object=org)
+dev.off()
+# Run and plot tSNE
+org <- FindClusters(object = org, reduction.type = "pca", dims.use =1:15, resolution = 0.6, print.output = 0, save.SNN = TRUE, force.recalc=T)
+org <- RunTSNE(object = org, dims.use =1:15, do.fast = TRUE, check_duplicates=F, max_iter=500)
+pdf("Playing with regressed variables/tSNE- nothing regressed.pdf",useDingbats=FALSE)
+TSNEPlot(object = org,do.label=T)
+TSNEPlot(object = org,group.by="Phase")
+TSNEPlot(object = org,group.by="orig.ident")
+dev.off()
+
+#### Play with number of tSNE iterations
+titles<-c("Playing with regressed variables/tSNE-regressed-iter50.pdf", "Playing with regressed variables/tSNE-regressed-iter100.pdf", "Playing with regressed variables/tSNE-regressed-iter150.pdf", "Playing with regressed variables/tSNE-regressed-iter200.pdf", "Playing with regressed variables/tSNE-regressed-iter250.pdf", "Playing with regressed variables/tSNE-regressed-iter300.pdf", "Playing with regressed variables/tSNE-regressed-iter350.pdf", "Playing with regressed variables/tSNE-regressed-iter400.pdf", "Playing with regressed variables/tSNE-regressed-iter450.pdf", "Playing with regressed variables/tSNE-regressed-iter500.pdf", "Playing with regressed variables/tSNE-regressed-iter1000.pdf")
+iters<-c(50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 1000)
+for (i in seq_along(titles)) {
+  org<-RunTSNE(object=org, dims.use=1:15, do.fast=TRUE, check_duplicates=FALSE, max_iter=iters[i])
+  pdf(titles[i], useDingbats=FALSE)
+  TSNEPlot(object = org,do.label=T)
+  TSNEPlot(object = org,group.by="Phase")
+  TSNEPlot(object = org,group.by="orig.ident")
+  dev.off() }
+
+## Create lists of known genes to identify unknown clusters or cell types within clusters
+clus0<-c("PAX3","PAX7","PAXBP1")
+clus0_ID<-genes %>% filter(geneName %in% clus0) %>% pull(geneID)
+clus1<-c("PAXBP1","PAX3","PAX7","ID3","CDH15","CD34","FOXK1","MYF5","MYF6","MYOG","EIF5A","CKM","ENO2","ENO3","SGCE","MSTN","MCAM","TNNI1","TNNC1","ACTA2","CDH5","DES","ACTN2")
+clus1_ID<-genes %>% filter(geneName %in% clus1) %>% pull(geneID)
+clus2<-c("SNAI2","SOX10","SOX9","ETS1","LMO4","FOXD3")
+clus2_ID<-genes %>% filter(geneName %in% clus2) %>% pull(geneID)
+clus3<-c("ENO2","NGFR","TFAP2A","SNAP25","NCAM1","POU4F1")
+clus3_ID<-genes %>% filter(geneName %in% clus3) %>% pull(geneID)
+clus4<-c("MYF6","SNAI1","MET","COL1A1","TWIST1","SIX1","HAND2")
+clus4_ID<-genes %>% filter(geneName %in% clus4) %>% pull(geneID)
+genes_all<-c(clus0, clus1, clus2, clus3, clus4)
+genes_all<-genes_all[-which(duplicated(genes_all))]
+genes_all_names<-genes %>% filter(geneName %in% genes_all) %>% .[,c(6,7)]
+
+### Save Heatmaps of literature marker genes and file for renaming from ENSEMBLE IDs
+pdf("Final v3/Heatmap, literature marker genes by cluster, 100 cells per cluster, final v3.pdf",useDingbats=FALSE)
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = clus0_ID, slim.col.label = TRUE, group.label.rot = TRUE)
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = clus1_ID, slim.col.label = TRUE, group.label.rot = TRUE)
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = clus2_ID, slim.col.label = TRUE, group.label.rot = TRUE)
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = clus3_ID, slim.col.label = TRUE, group.label.rot = TRUE)
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = clus4_ID, slim.col.label = TRUE, group.label.rot = TRUE)
+dev.off()
+write.csv(genes_all_names, "Fianl v3/Heatmap, literature marker gene names for relabeling, final v3.csv")
+
+
+
+
+
+
+
+## Remove obvious clusters and re-analyze in 3 batches
+### Selecting cells by clusters for re-clustering
+cells_neu<-names(org@ident)[which(org@ident==5)]
+data_5<-data[,cells_neu]
+cells_unk<-names(org@ident)[which(org@ident==6)]
+data_6<-data[,cells_unk]
+cells_other<-names(org@ident)[which(org@ident==0|org@ident==1|org@ident==2|org@ident==3|org@ident==4)]
+data_other<-data[,cells_other]
+
+### Create new Seurat objects for each group, run PCA and select components for analysis, run cluster analysis and plot tSNE 
+org_5 <-CreateSeuratObject(data_5,project="Organoid",min.cells=5,min.genes=200, normalization.method="LogNormalize", meta.data=cells)
+org_5 <- ScaleData(object = org_5, vars.to.regress = c("log10GenesPerUMI","mitoRatio","orig.ident"))
+org_5 <- FindVariableGenes(object = org_5, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.05, x.high.cutoff = 3, y.cutoff = 0.75)
+org_5 <- RunPCA(object = org_5, pc.genes=org@var.genes, do.print = F)
+PCHeatmap(object = org_5, pc.use = 1:12, cells.use = 500, do.balanced = TRUE, label.columns = FALSE)
+PCElbowPlot(object = org_5)
+org_5 <- FindClusters(object = org_5, reduction.type = "pca", dims.use = 1:5, resolution = 0.6, print.output = 0, save.SNN = TRUE, force.recalc=T)
+org_5 <- RunTSNE(object = org_5, dims.use = 1:5, do.fast = TRUE, check_duplicates=F,perplexity=50)
+pdf("tSNE_clus5_pc1,12_final.pdf",useDingbats=FALSE)
+TSNEPlot(object = org_5,do.label=T)
+dev.off()
+
+
+org_6 <-CreateSeuratObject(data_6,project="Organoid",min.cells=5,min.genes=200, normalization.method="LogNormalize", meta.data=cells)
+org_6 <- ScaleData(object = org_6, vars.to.regress = c("log10GenesPerUMI","mitoRatio","orig.ident"))
+org_6 <- FindVariableGenes(object = org_6, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.05, x.high.cutoff = 3, y.cutoff = 0.75)
+org_6 <- RunPCA(object = org_6, pc.genes=org@var.genes, do.print = F)
+PCHeatmap(object = org_6, pc.use = 1:12, cells.use = 500, do.balanced = TRUE, label.columns = FALSE)
+PCElbowPlot(object = org_6)
+org_6 <- FindClusters(object = org_6, reduction.type = "pca", dims.use = 1:7, resolution = 0.25, print.output = 0, save.SNN = TRUE, force.recalc=T)
+org_6 <- RunTSNE(object = org_6, dims.use = 1:7, do.fast = TRUE, check_duplicates=F,perplexity=100)
+pdf("tSNE_clus6_pc1,12_final.pdf",useDingbats=FALSE)
+TSNEPlot(object = org_6,do.label=T)
+dev.off()
+
+
+org_other <-CreateSeuratObject(data_other,project="Organoid",min.cells=5,min.genes=200, normalization.method="LogNormalize", meta.data=cells)
+org_other <- ScaleData(object = org_other, vars.to.regress = c("log10GenesPerUMI","mitoRatio","orig.ident"))
+org_other <- FindVariableGenes(object = org_other, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.05, x.high.cutoff = 3, y.cutoff = 0.75)
+org_other <- RunPCA(object = org_other, pc.genes=org@var.genes, do.print = F)
+PCHeatmap(object = org_other, pc.use = 1:12, cells.use = 500, do.balanced = TRUE, label.columns = FALSE)
+PCElbowPlot(object = org_other)
+org_other <- FindClusters(object = org_other, reduction.type = "pca", dims.use = 1:9, resolution = 0.25, print.output = 0, save.SNN = TRUE, force.recalc=T)
+org_other <- RunTSNE(object = org_other, dims.use = 1:9, do.fast = TRUE, check_duplicates=F,perplexity=100)
+pdf("tSNE_clusOther_pc1,12_final.pdf",useDingbats=FALSE)
+TSNEPlot(object = org_other,do.label=T)
+dev.off()
+
+### Find clustermarkers for new sub-clusters
+cluster.markers_5<-FindAllMarkers(object=org_5, method="bimod", only.pos=T, min.pct=0.5, thresh.use=0.25)
+cluster.markers_5<-merge(cluster.markers_5,genes,by.x="gene",by.y="geneID")
+write.csv(cluster.markers_5[,c(1,3,4,5,6,7,13)] %>% group_by(cluster) %>% top_n(100, avg_logFC),"Joao scRNAseq tsne, re-clus orig 5, final.csv")
+
+cluster.markers_6<-FindAllMarkers(object=org_6, method="bimod", only.pos=T, min.pct=0.5, thresh.use=0.25)
+cluster.markers_6<-merge(cluster.markers_6,genes,by.x="gene",by.y="geneID")
+write.csv(cluster.markers_6[,c(1,3,4,5,6,7,13)] %>% group_by(cluster) %>% top_n(100, avg_logFC),"Joao scRNAseq tsne, re-clus orig 6, final.csv")
+
+cluster.markers_other<-FindAllMarkers(object=org_other, method="bimod", only.pos=T, min.pct=0.5, thresh.use=0.25)
+cluster.markers_other<-merge(cluster.markers_other,genes,by.x="gene",by.y="geneID")
+write.csv(cluster.markers_other[,c(1,3,4,5,6,7,13)] %>% group_by(cluster) %>% top_n(100, avg_logFC),"Joao scRNAseq tsne, re-clus orig others, final.csv")
+
+
+## Plot cluster marker genes as tsne plots
+pdf("tSNE plot, overlay markers by cluster, v3.pdf")
+FeaturePlot(object=org, features.plot=cluster.markers %>% filter(cluster==0) %>% top_n(9,avg_logFC) %>% pull(gene), cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=cluster.markers %>% filter(cluster==1) %>% top_n(9,avg_logFC) %>% pull(gene), cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=cluster.markers %>% filter(cluster==2) %>% top_n(9,avg_logFC) %>% pull(gene), cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=cluster.markers %>% filter(cluster==3) %>% top_n(9,avg_logFC) %>% pull(gene), cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=cluster.markers %>% filter(cluster==4) %>% top_n(9,avg_logFC) %>% pull(gene), cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=cluster.markers %>% filter(cluster==5) %>% top_n(9,avg_logFC) %>% pull(gene), cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=cluster.markers %>% filter(cluster==6) %>% top_n(9,avg_logFC) %>% pull(gene), cols.use=c("grey","blue"), reduction.use="tsne")
+dev.off()
+
+
+### Visualize specific marker genes for potential cell-types
+myogenic<-c("PAX7","PAX3","LBX1","MOX2","MYF5","MYOD1","MYOG","MRF4","MEF2")
+muscle<-c("MYH4","MYH2","TNNT1","MYBPC1")
+neurogenic<-c("PAX6","NEUROG1","NEUROG2")								
+neurons<-c("TUBB3","SNAP25","SYP","RBFOX3","SNHG11")
+neu_motor<-c("ISL1","ISL2","HB9","VACHT","ChAT","LHX3","FOXP1","FLT1")
+neu_sensory<-c("ISL1","ISL2","HB9","POU4F1","PRPH","SCN10A","SCN11A","SCN9A","TRPV1")
+interneurons<-c("GAD1","GAD2","LBX1","LMX1B")
+vasculature<-c("VECAD","FLK1","FZD4","ADAMTS6","ANGPT1","GPC3","LEF1","LIF","MGP","MMP21","NDP","NODAL","MYL9","FLT1","PECAM1","TEK","PDGFRB")
+microglia<-c("TMEM119","HLA-DQB1","LPCAT2","TMTC1","ITGAM","ITGAL","AIF1","CX3CR1","ADGRE","CD68","PTPRC","CSPG4","CTSS","CSF1R","P2YR13","TGFBR1","MERTK","OLFML3","P2RY12")
+skin<-c("LCE1D","LCE1E","PSORS1C2","KRT10","KRT1","FLG")
+astrocytes<-c("AQP4","ATP1A2","GJA1","SLC1A2","S100B")
+schwann<-c("MPZ","PMP22","PRX")
+oligo<-c("MBP","MOBP","MOG","PLP1")
+opc<-c("CSPG4","GPR17","PDGFRA")
+
+myogenic_ID<-genes %>% filter(geneName %in% myogenic) %>% pull(geneID)
+muscle_ID<-genes %>% filter(geneName %in% muscle) %>% pull(geneID)
+neurogenic_ID<-genes %>% filter(geneName %in% neurogenic) %>% pull(geneID)
+neurons_ID<-genes %>% filter(geneName %in% neurons) %>% pull(geneID)
+neu_motor_ID<-genes %>% filter(geneName %in% neu_motor) %>% pull(geneID)
+neu_sensory_ID<-genes %>% filter(geneName %in% neu_sensory) %>% pull(geneID)
+interneurons_ID<-genes %>% filter(geneName %in% interneurons) %>% pull(geneID)
+vasculature_ID<-genes %>% filter(geneName %in% vasculature) %>% pull(geneID)
+microglia_ID<-genes %>% filter(geneName %in% microglia) %>% pull(geneID)
+skin_ID<-genes %>% filter(geneName %in% skin) %>% pull(geneID)
+astrocytes_ID<-genes %>% filter(geneName %in% astrocytes) %>% pull(geneID)
+schwann_ID<-genes %>% filter(geneName %in% schwann) %>% pull(geneID)
+oligo_ID<-genes %>% filter(geneName %in% oligo) %>% pull(geneID)
+opc_ID<-genes %>% filter(geneName %in% opc) %>% pull(geneID)
+
+#### Show expression of each gene as overlay on tSNE plot
+pdf("tSNE plot, overlay markers by group, final.pdf",useDingbats=FALSE)
+FeaturePlot(object=org, features.plot=myogenic_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=muscle_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=neurogenic_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=neurons_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=neu_motor_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=neu_sensory_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=interneurons_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=vasculature_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=microglia_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=skin_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=astrocytes_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=schwann_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=oligo_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+FeaturePlot(object=org, features.plot=opc_ID, cols.use=c("grey","blue"), reduction.use="tsne")
+dev.off()
+
+#### Show raw count of each gene as violin plot
+pdf("tSNE clusters, violin plots by marker, final.pdf")
+VlnPlot(object=org, features.plot=myogenic_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=muscle_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=neurogenic_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=neurons_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=neu_motor_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=neu_sensory_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=interneurons_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=vasculature_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=microglia_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=skin_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=astocytes_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=schwann_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=oligo_ID, use.raw = TRUE, y.log = TRUE)
+VlnPlot(object=org, features.plot=opc_ID, use.raw = TRUE, y.log = TRUE)
+dev.off()
+
+#### Show heat map of master gene list
+genes_all<-c(myogenic, muscle, neurogenic, neurons, neu_motor, neu_sensory, interneurons, vasculature, microglia, skin, astrocytes, schwann, oligo, opc)
+genes_all<-genes_all[-which(duplicated(genes_all))]
+genes_ID<-genes %>% filter(geneName %in% genes_all) %>% pull(geneID)
+pdf("Heatmap, Joao's marker genes, 100 cells per cluster.pdf",useDingbats=FALSE)
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = genes_ID, slim.col.label = TRUE, group.label.rot = TRUE)
+dev.off()
+genes_all_names<-genes %>% filter(geneName %in% genes_all) %>% .[,c(6,7)]
+write.csv(genes_all_names, "Heatmap, Joao's markers for relabeling.csv")
+
+### Show heatmap of top 10 cluster marker genes by avg_logFC
+genes_clusters<-cluster.markers %>% group_by(cluster) %>% top_n(10, avg_logFC)
+genes_clusters<-genes_clusters[order(genes_clusters$cluster,-genes_clusters$avg_logFC),] %>% pull(gene)
+pdf("Heatmap, cluster marker genes, 100 cells per cluster_reduce cluster resolution.pdf",useDingbats=FALSE)
+DoHeatmap(object = SubsetData(object = org, max.cells.per.ident = 100), genes.use = genes_clusters, slim.col.label = TRUE, group.label.rot = TRUE)
+dev.off()
+genes_clusters_names<-genes %>% filter(geneID %in% genes_clusters) %>% .[,c(6,7)]
+write.csv(genes_clusters_names,"Heatmap, cluster marker gene names for relabeling.csv")
